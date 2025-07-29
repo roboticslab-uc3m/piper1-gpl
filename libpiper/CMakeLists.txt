@@ -1,11 +1,18 @@
 # Builds libpiper
 cmake_minimum_required(VERSION 3.22)
-project(piper LANGUAGES C CXX)
+
+project(piper
+    VERSION 1.3.0
+    LANGUAGES C CXX
+)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(ExternalProject)
+
+# Required in roboticslab-uc3m projects
+find_package(YCM REQUIRED)
 
 # Install location for espeak-ng
 set(ESPEAKNG_BUILD_DIR ${CMAKE_BINARY_DIR}/espeak_ng)
@@ -111,36 +118,94 @@ endif()
 
 # ---- libpiper ---
 
+include(GNUInstallDirs)
+
 add_library(piper SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/src/piper.cpp
 )
 
 add_dependencies(piper espeak_ng_external)
-target_include_directories(piper PUBLIC
-    ${ESPEAKNG_INSTALL_DIR}/include
-    ${ONNXRUNTIME_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+target_include_directories(piper
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+        $<BUILD_INTERFACE:${ESPEAKNG_INSTALL_DIR}/include>
+        $<BUILD_INTERFACE:${ONNXRUNTIME_DIR}/include>
 )
 target_link_directories(piper PUBLIC
-    ${ONNXRUNTIME_DIR}/lib
+    $<BUILD_INTERFACE:${ONNXRUNTIME_DIR}/lib>
 )
 target_link_libraries(piper
-    ${ESPEAKNG_STATIC_LIB}
-    ${UCD_STATIC_LIB}
-    onnxruntime
+    PUBLIC
+        onnxruntime
+    PRIVATE
+        ${ESPEAKNG_STATIC_LIB}
+        ${UCD_STATIC_LIB}
+)
+
+target_compile_features(piper PUBLIC cxx_std_17)
+
+set_property(TARGET piper PROPERTY PUBLIC_HEADER
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/piper.h
 )
 
 # ---- install ---
 
-include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
-install(TARGETS piper
-    DESTINATION ${CMAKE_INSTALL_PREFIX}
+set(ESPEAKNG_DATA_DIR_BUILD "${ESPEAKNG_INSTALL_DIR}/share/espeak-ng-data")
+set(ESPEAKNG_DATA_DIR "${ESPEAKNG_DATA_DIR_BUILD}")
+
+configure_package_config_file(${CMAKE_CURRENT_SOURCE_DIR}/Config.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/piperConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
+    PATH_VARS ESPEAKNG_DATA_DIR
+    INSTALL_PREFIX ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+set(ESPEAKNG_DATA_DIR ${CMAKE_INSTALL_DATADIR}/espeak-ng-data)
+
+configure_package_config_file(${CMAKE_CURRENT_SOURCE_DIR}/Config.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/piperConfigInstall.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/piper
+    PATH_VARS ESPEAKNG_DATA_DIR
+)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/piperConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMajorVersion
 )
 
 install(
-    FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/piper.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    TARGETS piper
+    EXPORT piper
+    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/piper
+)
+
+export(
+    TARGETS piper
+    NAMESPACE piper::
+    FILE piperTargets.cmake
+)
+
+install(
+    EXPORT piper
+    NAMESPACE piper::
+    FILE piperTargets.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/piper
+)
+
+install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/piperConfigInstall.cmake"
+    RENAME piperConfig.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/piper
+)
+
+install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/piperConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/piper
 )
 
 install(
@@ -149,10 +214,10 @@ install(
 )
 
 # Copy espeak-ng-data
-set(ESPEAKNG_DATA_SRC ${CMAKE_BINARY_DIR}/espeak_ng-install/share/espeak-ng-data)
-set(ESPEAKNG_DATA_DST ${CMAKE_INSTALL_PREFIX}/espeak-ng-data)
-
 install(
-    DIRECTORY ${ESPEAKNG_DATA_SRC}
-    DESTINATION ${CMAKE_INSTALL_PREFIX}
+    DIRECTORY ${ESPEAKNG_DATA_DIR_BUILD}
+    DESTINATION ${CMAKE_INSTALL_DATADIR}
 )
+
+# Added by YCM
+include(AddUninstallTarget)

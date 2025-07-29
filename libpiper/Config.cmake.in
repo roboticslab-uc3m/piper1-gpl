@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+set_and_check(ESPEAKNG_DATA_DIR @PACKAGE_ESPEAKNG_DATA_DIR@)
+
+include("${CMAKE_CURRENT_LIST_DIR}/piperTargets.cmake")
+
+check_required_components(piper)
