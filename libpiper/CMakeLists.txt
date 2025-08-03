@@ -11,9 +11,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(ExternalProject)
 
-# Required in roboticslab-uc3m projects
-find_package(YCM REQUIRED)
-
 # Install location for espeak-ng
 set(ESPEAKNG_BUILD_DIR ${CMAKE_BINARY_DIR}/espeak_ng)
 set(ESPEAKNG_INSTALL_DIR ${CMAKE_BINARY_DIR}/espeak_ng-install)
@@ -219,5 +216,9 @@ install(
     DESTINATION ${CMAKE_INSTALL_DATADIR}
 )
 
-# Added by YCM
-include(AddUninstallTarget)
+# Required in roboticslab-uc3m projects
+find_package(YCM)
+
+if(YCM_FOUND)
+    include(AddUninstallTarget)
+endif()
