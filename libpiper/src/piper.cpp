@@ -3,6 +3,7 @@
 
 #include <array>
 #include <fstream>
+#include <limits>
 
 #include <espeak-ng/speak_lib.h>
 
@@ -197,14 +198,20 @@ int piper_synthesize_start(struct piper_synthesizer *synth, const char *text,
     }
 
     // phonemes to ids
+    std::vector<Phoneme> sentence_codepoints;
     std::vector<PhonemeId> sentence_ids;
     for (auto &phonemes_str : sentence_phonemes) {
         if (phonemes_str.empty()) {
             continue;
         }
 
+        sentence_codepoints.push_back(PHONEME_BOS);
         sentence_ids.push_back(ID_BOS);
+
+        sentence_codepoints.push_back(PHONEME_BOS);
         sentence_ids.push_back(ID_PAD);
+
+        sentence_codepoints.push_back(PHONEME_SEPARATOR);
 
         auto phonemes_norm = una::norm::to_nfd_utf8(phonemes_str);
         auto phonemes_range = una::ranges::utf8_view{phonemes_norm};
@@ -215,22 +222,28 @@ int piper_synthesize_start(struct piper_synthesizer *synth, const char *text,
         // These surround words from languages other than the current voice.
         bool in_lang_flag = false;
         while (phonemes_iter != phonemes_end) {
+            auto phoneme = *phonemes_iter;
+
             if (in_lang_flag) {
-                if (*phonemes_iter == U')') {
+                if (phoneme == U')') {
                     // End of (lang) switch
                     in_lang_flag = false;
                 }
-            } else if (*phonemes_iter == U'(') {
+            } else if (phoneme == U'(') {
                 // Start of (lang) switch
                 in_lang_flag = true;
             } else {
                 // Look up ids
-                auto ids_for_phoneme =
-                    synth->phoneme_id_map.find(*phonemes_iter);
+                auto ids_for_phoneme = synth->phoneme_id_map.find(phoneme);
                 if (ids_for_phoneme != synth->phoneme_id_map.end()) {
                     for (auto id : ids_for_phoneme->second) {
+                        sentence_codepoints.push_back(phoneme);
                         sentence_ids.push_back(id);
+
+                        sentence_codepoints.push_back(phoneme);
                         sentence_ids.push_back(ID_PAD);
+
+                        sentence_codepoints.push_back(PHONEME_SEPARATOR);
                     }
                 }
             }
@@ -238,9 +251,12 @@ int piper_synthesize_start(struct piper_synthesizer *synth, const char *text,
             phonemes_iter++;
         }
 
+        sentence_codepoints.push_back(PHONEME_EOS);
         sentence_ids.push_back(ID_EOS);
+        sentence_codepoints.push_back(PHONEME_SEPARATOR);
 
-        synth->phoneme_id_queue.emplace(std::move(sentence_ids));
+        synth->phoneme_id_queue.emplace(
+            std::move(std::make_pair(sentence_codepoints, sentence_ids)));
         sentence_ids.clear();
     }
 
@@ -257,12 +273,20 @@ int piper_synthesize_next(struct piper_synthesizer *synth,
         return PIPER_ERR_GENERIC;
     }
 
+    // Clear data from previous call
     synth->chunk_samples.clear();
+    synth->chunk_phonemes.clear();
+    synth->chunk_phoneme_ids.clear();
+    synth->chunk_alignments.clear();
 
     chunk->sample_rate = synth->sample_rate;
     chunk->samples = nullptr;
     chunk->num_samples = 0;
     chunk->is_last = false;
+    chunk->phoneme_ids = nullptr;
+    chunk->num_phoneme_ids = 0;
+    chunk->alignments = nullptr;
+    chunk->num_alignments = 0;
 
     if (synth->phoneme_id_queue.empty()) {
         // Empty final chunk
@@ -271,7 +295,7 @@ int piper_synthesize_next(struct piper_synthesizer *synth,
     }
 
     // Process next list of phoneme ids
-    auto next_ids = std::move(synth->phoneme_id_queue.front());
+    auto [next_phonemes, next_ids] = std::move(synth->phoneme_id_queue.front());
     synth->phoneme_id_queue.pop();
 
     auto memoryInfo = Ort::MemoryInfo::CreateCpu(
@@ -314,14 +338,21 @@ int piper_synthesize_next(struct piper_synthesizer *synth,
     // From export_onnx.py
     std::array<const char *, 4> input_names = {"input", "input_lengths",
                                                "scales", "sid"};
-    std::array<const char *, 1> output_names = {"output"};
+
+    // Get all output names
+    std::vector<std::string> output_names_strs =
+        synth->session->GetOutputNames();
+    std::vector<const char *> output_names;
+    for (const auto &name : output_names_strs) {
+        output_names.push_back(name.c_str());
+    }
 
     // Infer
     auto output_tensors = synth->session->Run(
         Ort::RunOptions{nullptr}, input_names.data(), input_tensors.data(),
         input_tensors.size(), output_names.data(), output_names.size());
 
-    if ((output_tensors.size() != 1) || (!output_tensors.front().IsTensor())) {
+    if ((output_tensors.size() < 1) || (!output_tensors.front().IsTensor())) {
         return PIPER_ERR_GENERIC;
     }
 
@@ -336,6 +367,43 @@ int piper_synthesize_next(struct piper_synthesizer *synth,
               synth->chunk_samples.begin());
     chunk->samples = synth->chunk_samples.data();
 
+    chunk->is_last = synth->phoneme_id_queue.empty();
+
+    // Copy phonemes
+    synth->chunk_phonemes = std::move(next_phonemes);
+    chunk->phonemes = synth->chunk_phonemes.data();
+    chunk->num_phonemes = synth->chunk_phonemes.size();
+
+    // Copy phoneme ids
+    for (auto phoneme_id : next_ids) {
+        if (phoneme_id < std::numeric_limits<int>::min() ||
+            phoneme_id > std::numeric_limits<int>::max()) {
+            continue;
+        }
+        synth->chunk_phoneme_ids.push_back(static_cast<int>(phoneme_id));
+    }
+
+    chunk->phoneme_ids = synth->chunk_phoneme_ids.data();
+    chunk->num_phoneme_ids = synth->chunk_phoneme_ids.size();
+
+    // Check for alignments
+    if (output_tensors.size() > 1) {
+        auto alignments_shape =
+            output_tensors[1].GetTensorTypeAndShapeInfo().GetShape();
+
+        chunk->num_alignments = alignments_shape[alignments_shape.size() - 1];
+        const float *alignments_tensor_data =
+            output_tensors[1].GetTensorData<float>();
+
+        synth->chunk_alignments.resize(chunk->num_alignments);
+        for (std::size_t i = 0; i < chunk->num_alignments; i++) {
+            synth->chunk_alignments[i] =
+                (int)(alignments_tensor_data[i] * synth->hop_length);
+        }
+
+        chunk->alignments = synth->chunk_alignments.data();
+    }
+
     // Clean up
     for (std::size_t i = 0; i < output_tensors.size(); i++) {
         Ort::detail::OrtRelease(output_tensors[i].release());
@@ -344,8 +412,6 @@ int piper_synthesize_next(struct piper_synthesizer *synth,
     for (std::size_t i = 0; i < input_tensors.size(); i++) {
         Ort::detail::OrtRelease(input_tensors[i].release());
     }
-
-    chunk->is_last = synth->phoneme_id_queue.empty();
 
     return PIPER_OK;
 }

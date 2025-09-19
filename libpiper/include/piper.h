@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <uchar.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,63 @@ typedef struct piper_audio_chunk {
    * \brief True if this is the last audio chunk.
    */
   bool is_last;
+
+  /**
+   * \brief Phoneme codepoints that produced this audio chunk, aligned with ids.
+   *
+   * Phonemes will look like [p1, p1, 0, p2, p2, 0, ...] where the same phoneme
+   * codepoint is repeated for each id from that phoneme (usually just one id
+   * plus pad).
+   *
+   * Groups of repeated codepoints are separated by a 0 so that alignments can
+   * be attributed to the correct phoneme. This is accomplished by:
+   *
+   * 1. Read N (repeated) codepoints from phonemes until a 0 is reached (or end)
+   * 2. The next N phoneme ids correspond to that phoneme
+   * 3. The next N alignments (sample counts) correspond to that phoneme
+   * 4. Advance your iterators in the phoneme id and alignment arrays by N
+   * 5. Repeat
+   */
+  const char32_t *phonemes;
+
+  /**
+   * \brief Number of codepoints in phonemes.
+   */
+  size_t num_phonemes;
+
+  /**
+   * \brief Phoneme ids that produced this audio chunk.
+   *
+   * Ids will look like [1, 0, id1, 0, id2, 0, ..., 2] where:
+   * 0 = pad
+   * 1 = beginning of sentence
+   * 2 = end of sentence
+   */
+  const int *phoneme_ids;
+
+  /**
+   * \brief Number of ids in phoneme_ids.
+   */
+  size_t num_phoneme_ids;
+
+  /**
+   * \brief Audio sample count for each phoneme id.
+   *
+   * This includes the meta ids:
+   * 0 = pad
+   * 1 = beginning of sentence
+   * 2 = end of sentence
+   *
+   * Use the phonemes array to align these sample counts with actual phonemes.
+   */
+  const int *alignments;
+
+  /**
+   * \brief Number of alignments.
+   *
+   * This should be the same as num_phoneme_ids.
+   */
+  size_t num_alignments;
 } piper_audio_chunk;
 
 /**
